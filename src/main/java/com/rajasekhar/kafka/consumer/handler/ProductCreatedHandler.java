@@ -1,18 +1,27 @@
 package com.rajasekhar.kafka.consumer.handler;
 
 import com.rajasekhar.common.event.ProductCreatedEvent;
+import com.rajasekhar.kafka.consumer.entity.ProcessedMessage;
 import com.rajasekhar.kafka.consumer.error.NonRetryableException;
 import com.rajasekhar.kafka.consumer.error.RetryableException;
+import com.rajasekhar.kafka.consumer.repository.ProcessedMessageRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.kafka.annotation.KafkaHandler;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.support.KafkaHeaders;
+import org.springframework.messaging.handler.annotation.Header;
+import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
+
+import java.util.Objects;
 
 @Component
 @KafkaListener(topics = "product-created-events-topic")
@@ -20,8 +29,21 @@ public class ProductCreatedHandler {
 
     @Autowired
     RestTemplate restTemplate;
+
+    @Autowired
+    ProcessedMessageRepository processedMessageRepository;
     @KafkaHandler
-    public void handleMessages(ProductCreatedEvent productCreatedEvent){
+    @Transactional
+    public void handleMessages(@Payload ProductCreatedEvent productCreatedEvent,
+                               @Header("messageId") String messageId,
+                               @Header(KafkaHeaders.RECEIVED_KEY) String messageKey){
+
+        //check if message was already exist in DB
+        ProcessedMessage processedMessage = processedMessageRepository.findByMessageId(messageId);
+        if(Objects.nonNull(processedMessage)){
+            System.out.println("Found duplicate message id "+messageId);
+            return;
+        }
 
         System.out.println("Received an event *****"+productCreatedEvent.getName());
         String url="http://localhost:8082/response/200";
@@ -38,6 +60,11 @@ public class ProductCreatedHandler {
         }catch (Exception exc){
             throw new NonRetryableException(exc);
         }
-
+        //saving message id and product id in DB table for idempotence check
+        try {
+            processedMessageRepository.save(new ProcessedMessage(messageId, productCreatedEvent.getProductId()));
+        }catch (DataIntegrityViolationException ex){
+            throw new NonRetryableException(ex);
+        }
     }
 }
